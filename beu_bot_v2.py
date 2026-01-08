@@ -2,6 +2,7 @@ import logging
 import requests
 import io
 import datetime
+import time  # Added for retry delay
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
@@ -53,6 +54,29 @@ logging.basicConfig(
 # --- HELPER: BRANDING ---
 HEADER_TEXT = "🌐 **Visit: beuhub.site**\n━━━━━━━━━━━━━━━━━━"
 FOOTER_TEXT = "━━━━━━━━━━━━━━━━━━\n🌐 **Powered by beuhub.site**"
+
+# --- HELPER: API RETRY LOGIC ---
+def fetch_result_with_retry(params, max_retries=6):
+    """
+    Tries to fetch result from BEU server. 
+    If server is down, it retries 'max_retries' times with a delay.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(BASE_URL, params=params, timeout=10) # 10s timeout
+            if response.status_code == 200:
+                data = response.json()
+                # Check if API returned valid data structure
+                if data.get('status') == 200 and data.get('data'):
+                    return data
+        except requests.RequestException as e:
+            print(f"⚠️ Attempt {attempt} failed: {e}")
+        
+        # If failed, wait 2 seconds before next try
+        if attempt < max_retries:
+            time.sleep(2)
+            
+    return None # Failed after all retries
 
 # --- HELPER: GENERATE PDF MARKSHEET ---
 def generate_pdf_in_memory(data, batch, sem, exam_held):
@@ -286,12 +310,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Clear any previous user data to ensure a fresh start
     context.user_data.clear()
     
+    # Updated Welcome Message
     intro = (
         f"{HEADER_TEXT}\n"
         f"👋 **Hello {user}!**\n\n"
-        "🎓 **Welcome to the BEU Result Portal.**\n"
-        "Get your official results instantly with a mark sheet.\n\n"
-        "👇 **Please select your Batch Year:**"
+        "🎓 **Welcome to the BEU Result Portal.**\n\n"
+        "🤖 **What this Bot can do:**\n"
+        "✅ **Fetch Results:** Check any semester result instantly.\n"
+        "✅ **PDF Downloads:** Get professional marksheet PDFs.\n"
+        "✅ **Server Bypass:** Auto-retries if BEU site is down.\n"
+        "✅ **Secure:** Your data is safe & private.\n\n"
+        "👇 **Select your Batch Year to start:**"
     )
     keyboard = [
         [InlineKeyboardButton("2022", callback_data='2022'), InlineKeyboardButton("2023", callback_data='2023')],
@@ -374,39 +403,36 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     params = {"year": batch, "redg_no": reg_no, "semester": sem, "exam_held": exam_held}
 
-    try:
-        response = requests.get(BASE_URL, params=params)
-        data = response.json()
+    # USE RETRY LOGIC HERE
+    data_json = fetch_result_with_retry(params)
+    
+    if data_json and data_json.get('data'):
+        data = data_json['data']
+        result_text = format_marksheet_text(data, batch, sem, exam_held)
         
-        if response.status_code == 200 and data.get('status') == 200 and data.get('data'):
-            result_text = format_marksheet_text(data['data'], batch, sem, exam_held)
-            
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id, 
-                message_id=status_msg.message_id, 
-                text=result_text, 
-                parse_mode='Markdown'
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("📥 Download PDF Marksheet", callback_data='NAV_PDF')],
-                [InlineKeyboardButton("🔍 Check Another (Same Sem)", callback_data='NAV_SAME')],
-                [InlineKeyboardButton("📂 Change Semester", callback_data='NAV_SEM')],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data='NAV_HOME')]
-            ]
-            await update.message.reply_text("👇 **Actions:**", reply_markup=InlineKeyboardMarkup(keyboard))
-            return RESULT_MENU
-        else:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id, 
-                message_id=status_msg.message_id, 
-                text=f"❌ **Result Not Found.**\nCheck Reg No: `{reg_no}`", 
-                parse_mode='Markdown'
-            )
-            return ConversationHandler.END
-
-    except Exception as e:
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ Error: {str(e)}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=status_msg.message_id, 
+            text=result_text, 
+            parse_mode='Markdown'
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📥 Download PDF Marksheet", callback_data='NAV_PDF')],
+            [InlineKeyboardButton("🔍 Check Another (Same Sem)", callback_data='NAV_SAME')],
+            [InlineKeyboardButton("📂 Change Semester", callback_data='NAV_SEM')],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data='NAV_HOME')]
+        ]
+        await update.message.reply_text("👇 **Actions:**", reply_markup=InlineKeyboardMarkup(keyboard))
+        return RESULT_MENU
+    else:
+        # Error handling if retry failed or data is empty
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=status_msg.message_id, 
+            text=f"❌ **Result Not Found / Server Busy.**\nChecked Reg No: `{reg_no}`\n(Tried 6 times). Try again later.", 
+            parse_mode='Markdown'
+        )
         return ConversationHandler.END
 
 async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,25 +448,24 @@ async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         exam_held = EXAM_CONFIG.get(f"{batch}_{sem}")
         
         params = {"year": batch, "redg_no": reg_no, "semester": sem, "exam_held": exam_held}
-        try:
-            response = requests.get(BASE_URL, params=params)
-            data = response.json()
-            if data.get('data'):
-                pdf_file = generate_pdf_in_memory(data['data'], batch, sem, exam_held)
-                if pdf_file:
-                    await context.bot.send_document(
-                        chat_id=update.effective_chat.id,
-                        document=pdf_file,
-                        filename=f"BEU_Result_{reg_no}_{sem}.pdf",
-                        caption=f"📄 **Official Marksheet**\nReg No: {reg_no}\n{FOOTER_TEXT}",
-                        parse_mode='Markdown'
-                    )
-                else:
-                    await query.message.reply_text("❌ Error creating PDF file.")
+        
+        # USE RETRY LOGIC HERE TOO
+        data_json = fetch_result_with_retry(params)
+        
+        if data_json and data_json.get('data'):
+            pdf_file = generate_pdf_in_memory(data_json['data'], batch, sem, exam_held)
+            if pdf_file:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=pdf_file,
+                    filename=f"BEU_Result_{reg_no}_{sem}.pdf",
+                    caption=f"📄 **Official Marksheet**\nReg No: {reg_no}\n{FOOTER_TEXT}",
+                    parse_mode='Markdown'
+                )
             else:
-                await query.message.reply_text("❌ Error fetching data for PDF.")
-        except Exception as e:
-            await query.message.reply_text(f"❌ PDF Generation Failed: {e}")
+                await query.message.reply_text("❌ Error creating PDF file.")
+        else:
+            await query.message.reply_text("❌ Error fetching data for PDF (Server Busy).")
         return RESULT_MENU
 
     elif choice == 'NAV_SAME':
@@ -471,7 +496,7 @@ async def post_init(application: Application):
     """Sets the bot commands menu when bot starts."""
     await application.bot.set_my_commands([
         BotCommand("start", "Restart Bot / Check Result"),
-        BotCommand("set", "Admin: Set Exam Date"),
+        BotCommand("set", "for Admin),
         BotCommand("view_config", "Admin: View Config")
     ])
 
@@ -482,7 +507,7 @@ if __name__ == '__main__':
         keep_alive()
     except: pass
 
-    print("🤖 BEU Premium Bot (PDF + Suggestions) Starting...")
+    print("🤖 BEU Premium Bot (PDF + Suggestions + Auto-Retry) Starting...")
     
     # Updated Builder to include post_init
     application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
