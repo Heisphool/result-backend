@@ -2,7 +2,7 @@ import logging
 import requests
 import io
 import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -11,6 +11,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ConversationHandler,
+    Application
 )
 
 # PDF Library (HTML to PDF)
@@ -27,7 +28,6 @@ ADMIN_ID = 6716560182
 BASE_URL = "https://www.beu-bih.ac.in/backend/v1/result/get-result"
 
 # --- DEFAULT EXAM CONFIGURATION (Master List) ---
-# Updated with your specific data
 EXAM_CONFIG = {
     "2025_I": "Jan/2026",
     "2024_II": "Nov/2025",
@@ -54,14 +54,12 @@ logging.basicConfig(
 HEADER_TEXT = "🌐 **Visit: beuhub.site**\n━━━━━━━━━━━━━━━━━━"
 FOOTER_TEXT = "━━━━━━━━━━━━━━━━━━\n🌐 **Powered by beuhub.site**"
 
-# --- HELPER: GENERATE PDF MARKSHEET (PHP DESIGN FIX) ---
+# --- HELPER: GENERATE PDF MARKSHEET ---
 def generate_pdf_in_memory(data, batch, sem, exam_held):
     """
     Creates a professional Marksheet PDF using HTML and CSS based on the PHP design.
-    Fixed CSS to prevent 'NotImplementedType' error.
     """
     
-    # 1. Prepare Data
     name = data.get('name', 'N/A')
     reg_no = data.get('redg_no', 'N/A')
     college = data.get('college_name', 'N/A')
@@ -72,10 +70,8 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
     mother_name = data.get('mother_name', 'N/A')
     cgpa = data.get('cgpa', 'N/A')
     
-    # Use current date as publish date since API might not give it
     publish_date = datetime.date.today().strftime("%d-%b-%Y")
     
-    # SGPA
     sgpa_list = data.get('sgpa', [])
     current_sgpa = "N/A"
     sem_map = {'I':0, 'II':1, 'III':2, 'IV':3, 'V':4, 'VI':5, 'VII':6, 'VIII':7}
@@ -91,7 +87,6 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
         remarks_text = "PASS"
         remarks_style = "color: green;"
 
-    # 2. Build Theory Rows (With Credits)
     theory_rows = ""
     if data.get('theorySubjects'):
         for sub in data['theorySubjects']:
@@ -112,7 +107,6 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
     else:
         theory_rows = "<tr><td colspan='7' style='text-align:center;'>No Theory Subjects</td></tr>"
 
-    # 3. Build Practical Rows (With Credits)
     practical_rows = ""
     if data.get('practicalSubjects'):
         for sub in data['practicalSubjects']:
@@ -131,7 +125,6 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
             </tr>
             """
 
-    # 4. Build Academic Progress (SGPA History)
     sem_romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII']
     history_header = ""
     history_data = ""
@@ -142,239 +135,72 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
              val = sgpa_list[idx]
         history_data += f"<td>{val}</td>"
 
-    # 5. HTML Template with CSS (From PHP Design)
-    # FIX: Removed @bottom-center CSS logic and used standard HTML footer div
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <style>
-            @page {{
-                size: A4;
-                margin: 1cm;
-            }}
-            body {{
-                font-family: 'Times New Roman', serif;
-                font-size: 12px;
-                color: #000;
-            }}
-            .univ-title {{
-                font-size: 22pt;
-                font-weight: bold;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                line-height: 1.2;
-                color: #000;
-                text-align: center;
-            }}
-            .sub-title {{
-                font-size: 14pt;
-                font-weight: bold;
-                margin-top: 5px;
-                color: #333;
-                text-align: center;
-            }}
-            .exam-session {{
-                font-size: 11pt;
-                margin-top: 5px;
-                font-weight: bold;
-                text-align: center;
-            }}
-            
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 10.5pt;
-                margin-bottom: 15px;
-            }}
-            
-            /* Marks Table */
-            .marks-table th {{
-                background-color: #f0f0f0;
-                font-weight: bold;
-                text-transform: uppercase;
-                font-size: 9pt;
-                border: 1px solid #000;
-                padding: 4px 6px;
-                text-align: center;
-            }}
-            .marks-table td {{
-                border: 1px solid #000;
-                padding: 4px 6px;
-                vertical-align: middle;
-            }}
-            
-            /* Info Table */
-            .info-table td {{
-                padding: 5px 2px;
-                vertical-align: top;
-                border: none;
-            }}
-            
-            .summary-box {{
-                border: 1px solid #000;
-                padding: 10px;
-                margin-top: 10px;
-                background-color: #fafafa;
-            }}
-            
-            .header-container {{
-                text-align: center;
-                margin-bottom: 20px;
-                border-bottom: 1px solid #000;
-                padding-bottom: 20px;
-            }}
-            
-            .footer {{
-                text-align: center;
-                margin-top: 30px;
-                font-size: 9pt;
-                color: #777;
-                border-top: 1px solid #ccc;
-                padding-top: 10px;
-            }}
+            @page {{ size: A4; margin: 1cm; }}
+            body {{ font-family: 'Times New Roman', serif; font-size: 12px; color: #000; }}
+            .univ-title {{ font-size: 22pt; font-weight: bold; text-transform: uppercase; text-align: center; }}
+            .sub-title {{ font-size: 14pt; font-weight: bold; margin-top: 5px; color: #333; text-align: center; }}
+            .exam-session {{ font-size: 11pt; margin-top: 5px; font-weight: bold; text-align: center; }}
+            table {{ width: 100%; border-collapse: collapse; font-size: 10.5pt; margin-bottom: 15px; }}
+            .marks-table th {{ background-color: #f0f0f0; font-weight: bold; text-transform: uppercase; font-size: 9pt; border: 1px solid #000; padding: 4px 6px; text-align: center; }}
+            .marks-table td {{ border: 1px solid #000; padding: 4px 6px; vertical-align: middle; }}
+            .info-table td {{ padding: 5px 2px; vertical-align: top; border: none; }}
+            .summary-box {{ border: 1px solid #000; padding: 10px; margin-top: 10px; background-color: #fafafa; }}
+            .header-container {{ text-align: center; margin-bottom: 20px; border-bottom: 1px solid #000; padding-bottom: 20px; }}
+            .footer {{ text-align: center; margin-top: 30px; font-size: 9pt; color: #777; border-top: 1px solid #ccc; padding-top: 10px; }}
         </style>
     </head>
     <body>
-
-        <!-- Header -->
         <div class="header-container">
             <div class="univ-title">Bihar Engineering University</div>
             <div class="sub-title">Patna, Bihar</div>
-            <div style="margin-top:10px; font-size:12pt; font-weight:bold; text-transform: uppercase; text-align: center;">
-                B.Tech {sem} Semester Examination
-            </div>
+            <div style="margin-top:10px; font-size:12pt; font-weight:bold; text-transform: uppercase; text-align: center;">B.Tech {sem} Semester Examination</div>
             <div class="exam-session">Session: {exam_held}</div>
         </div>
-
-        <!-- Student Info -->
         <table class="info-table">
-            <tr>
-                <td style="width: 140px;"><strong>Registration No:</strong></td>
-                <td style="font-weight:bold; font-family:'Courier New', monospace; font-size: 12pt;">{reg_no}</td>
-            </tr>
-            <tr>
-                <td><strong>Student Name:</strong></td>
-                <td style="font-weight:bold; text-transform:uppercase;">{name}</td>
-            </tr>
-            <tr>
-                <td><strong>Father Name:</strong></td>
-                <td>{father_name}</td>
-                <td style="width: 120px;"><strong>Mother Name:</strong></td>
-                <td>{mother_name}</td>
-            </tr>
-            <tr>
-                <td><strong>College Name:</strong></td>
-                <td colspan="3">{college_code} - {college}</td>
-            </tr>
-            <tr>
-                <td><strong>Course Name:</strong></td>
-                <td colspan="3">{course_code} - {course}</td>
-            </tr>
+            <tr><td style="width: 140px;"><strong>Registration No:</strong></td><td style="font-weight:bold; font-family:'Courier New', monospace; font-size: 12pt;">{reg_no}</td></tr>
+            <tr><td><strong>Student Name:</strong></td><td style="font-weight:bold; text-transform:uppercase;">{name}</td></tr>
+            <tr><td><strong>Father Name:</strong></td><td>{father_name}</td><td style="width: 120px;"><strong>Mother Name:</strong></td><td>{mother_name}</td></tr>
+            <tr><td><strong>College Name:</strong></td><td colspan="3">{college_code} - {college}</td></tr>
+            <tr><td><strong>Course Name:</strong></td><td colspan="3">{course_code} - {course}</td></tr>
         </table>
-
-        <!-- Theory Marks -->
         <div style="font-weight:bold; margin-bottom:5px; text-decoration: underline;">THEORY</div>
-        <table class="marks-table">
-            <thead>
-                <tr>
-                    <th style="width: 15%;">Subject Code</th>
-                    <th style="text-align: left;">Subject Name</th>
-                    <th style="width: 8%;">ESE</th>
-                    <th style="width: 8%;">IA</th>
-                    <th style="width: 8%;">Total</th>
-                    <th style="width: 8%;">Grade</th>
-                    <th style="width: 8%;">Credit</th>
-                </tr>
-            </thead>
-            <tbody>
-                {theory_rows}
-            </tbody>
-        </table>
-
-        <!-- Practical Marks -->
+        <table class="marks-table"><thead><tr><th style="width: 15%;">Subject Code</th><th style="text-align: left;">Subject Name</th><th style="width: 8%;">ESE</th><th style="width: 8%;">IA</th><th style="width: 8%;">Total</th><th style="width: 8%;">Grade</th><th style="width: 8%;">Credit</th></tr></thead><tbody>{theory_rows}</tbody></table>
         <div style="font-weight:bold; margin-bottom:5px; margin-top:15px; text-decoration: underline;">PRACTICAL</div>
-        <table class="marks-table">
-            <thead>
-                <tr>
-                    <th style="width: 15%;">Subject Code</th>
-                    <th style="text-align: left;">Subject Name</th>
-                    <th style="width: 8%;">ESE</th>
-                    <th style="width: 8%;">IA</th>
-                    <th style="width: 8%;">Total</th>
-                    <th style="width: 8%;">Grade</th>
-                    <th style="width: 8%;">Credit</th>
-                </tr>
-            </thead>
-            <tbody>
-                {practical_rows}
-            </tbody>
-        </table>
-
-        <!-- Academic Progress -->
+        <table class="marks-table"><thead><tr><th style="width: 15%;">Subject Code</th><th style="text-align: left;">Subject Name</th><th style="width: 8%;">ESE</th><th style="width: 8%;">IA</th><th style="width: 8%;">Total</th><th style="width: 8%;">Grade</th><th style="width: 8%;">Credit</th></tr></thead><tbody>{practical_rows}</tbody></table>
         <div style="font-weight:bold; margin-bottom:5px; margin-top:15px; text-decoration: underline;">ACADEMIC PROGRESS</div>
-        <table class="marks-table" style="text-align: center;">
-            <thead>
-                <tr>
-                    {history_header}
-                    <th style="width: 12%; background-color: #333; color: white;">Cur. CGPA</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    {history_data}
-                    <td style="font-weight: bold;">{cgpa}</td>
-                </tr>
-            </tbody>
-        </table>
-
-        <!-- Summary -->
+        <table class="marks-table" style="text-align: center;"><thead><tr>{history_header}<th style="width: 12%; background-color: #333; color: white;">Cur. CGPA</th></tr></thead><tbody><tr>{history_data}<td style="font-weight: bold;">{cgpa}</td></tr></tbody></table>
         <div class="summary-box">
             <table style="width: 100%; border: none; margin: 0;">
                 <tr style="border: none;">
-                    <td style="border: none; text-align: left; width: 33%;">
-                        <strong>SGPA: </strong> <span style="font-size: 14pt; border: 2px solid #000; padding: 2px 8px; margin-left: 5px;">{current_sgpa}</span>
-                    </td>
-                    <td style="border: none; text-align: center; width: 33%;">
-                        <strong>CGPA: </strong> <span>{cgpa}</span>
-                    </td>
-                    <td style="border: none; text-align: right; width: 33%;">
-                        <strong>REMARKS: </strong> <span style="font-weight: bold; {remarks_style}">{remarks_text}</span>
-                    </td>
+                    <td style="border: none; text-align: left; width: 33%;"><strong>SGPA: </strong> <span style="font-size: 14pt; border: 2px solid #000; padding: 2px 8px; margin-left: 5px;">{current_sgpa}</span></td>
+                    <td style="border: none; text-align: center; width: 33%;"><strong>CGPA: </strong> <span>{cgpa}</span></td>
+                    <td style="border: none; text-align: right; width: 33%;"><strong>REMARKS: </strong> <span style="font-weight: bold; {remarks_style}">{remarks_text}</span></td>
                 </tr>
             </table>
         </div>
-
-        <div style="margin-top: 10px; font-size: 10pt;">
-            <strong>Publish Date:</strong> {publish_date}
-        </div>
-        
-        <!-- Footer (Added manually to avoid CSS errors) -->
-        <div class="footer">
-            Generated via BEU Result Bot | beuhub.site
-        </div>
-
+        <div style="margin-top: 10px; font-size: 10pt;"><strong>Publish Date:</strong> {publish_date}</div>
+        <div class="footer">Generated via BEU Result Bot | beuhub.site</div>
     </body>
     </html>
     """
 
-    # 6. Convert HTML to PDF
     pdf_file = io.BytesIO()
     pisa_status = pisa.CreatePDF(io.BytesIO(html_content.encode("utf-8")), dest=pdf_file)
-    
-    if pisa_status.err:
-        return None
-        
+    if pisa_status.err: return None
     pdf_file.seek(0)
     return pdf_file
 
-# --- HELPER: FORMAT RESULT TEXT (CHAT VERSION) ---
+# --- HELPER: FORMAT RESULT TEXT ---
 def format_marksheet_text(data, batch, sem, exam_held):
     name = data.get('name', 'N/A')
     reg_no = data.get('redg_no', 'N/A')
     college = data.get('college_name', 'N/A')
     
-    # Get SGPA
     sgpa_list = data.get('sgpa', [])
     current_sgpa = "N/A"
     sem_map = {'I':0, 'II':1, 'III':2, 'IV':3, 'V':4, 'VI':5, 'VII':6, 'VIII':7}
@@ -451,9 +277,15 @@ async def view_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🔹 **{b} (Sem {s}):** `{val}`\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-# --- USER HANDLERS ---
+# --- HANDLERS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts the bot or Resets the conversation."""
     user = update.effective_user.first_name
+    
+    # Clear any previous user data to ensure a fresh start
+    context.user_data.clear()
+    
     intro = (
         f"{HEADER_TEXT}\n"
         f"👋 **Hello {user}!**\n\n"
@@ -467,11 +299,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("2026", callback_data='2026')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # If called via CallbackQuery (e.g. Back button)
     if update.callback_query:
-        await update.callback_query.edit_message_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.callback_query.message.reply_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
+        
     return BATCH
+
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles unnecessary text input and guides user to start."""
+    await update.message.reply_text(
+        "⚠️ **Invalid Input!**\n\n"
+        "Please do not type unnecessary text.\n"
+        "To start or check result, click here 👉 /start",
+        parse_mode='Markdown'
+    )
 
 async def batch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -504,14 +348,19 @@ async def semester_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reg_no = update.message.text.strip()
-    batch = context.user_data.get('batch')
-    sem = context.user_data.get('semester')
     
+    # Check if user accidentally typed a command or random text
     if not reg_no.isdigit():
-        await update.message.reply_text("❌ **Invalid Input!** Digits only.")
+        await update.message.reply_text(
+            "❌ **Invalid Registration Number!**\n"
+            "Please enter digits only (e.g., 23103132004).\n\n"
+            "If you want to restart, type /start",
+            parse_mode='Markdown'
+        )
         return REG_NO
 
-    # Store Reg No for PDF generation
+    batch = context.user_data.get('batch')
+    sem = context.user_data.get('semester')
     context.user_data['reg_no'] = reg_no
 
     config_key = f"{batch}_{sem}"
@@ -530,7 +379,6 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         data = response.json()
         
         if response.status_code == 200 and data.get('status') == 200 and data.get('data'):
-            # Text Result
             result_text = format_marksheet_text(data['data'], batch, sem, exam_held)
             
             await context.bot.edit_message_text(
@@ -540,17 +388,13 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode='Markdown'
             )
             
-            # --- MENU WITH PDF OPTION ---
             keyboard = [
                 [InlineKeyboardButton("📥 Download PDF Marksheet", callback_data='NAV_PDF')],
                 [InlineKeyboardButton("🔍 Check Another (Same Sem)", callback_data='NAV_SAME')],
                 [InlineKeyboardButton("📂 Change Semester", callback_data='NAV_SEM')],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data='NAV_HOME')]
             ]
-            await update.message.reply_text(
-                "👇 **Actions:**", 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await update.message.reply_text("👇 **Actions:**", reply_markup=InlineKeyboardMarkup(keyboard))
             return RESULT_MENU
         else:
             await context.bot.edit_message_text(
@@ -565,16 +409,13 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ Error: {str(e)}")
         return ConversationHandler.END
 
-# --- RESULT MENU HANDLER (Includes PDF Logic) ---
 async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     choice = query.data
     
-    # 1. GENERATE PDF (Using HTML/CSS)
     if choice == 'NAV_PDF':
         await query.message.reply_text("⏳ **Generating PDF... Please wait.**")
-        
         batch = context.user_data.get('batch')
         sem = context.user_data.get('semester')
         reg_no = context.user_data.get('reg_no')
@@ -585,9 +426,7 @@ async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             response = requests.get(BASE_URL, params=params)
             data = response.json()
             if data.get('data'):
-                # Generate PDF using HTML Helper
                 pdf_file = generate_pdf_in_memory(data['data'], batch, sem, exam_held)
-                
                 if pdf_file:
                     await context.bot.send_document(
                         chat_id=update.effective_chat.id,
@@ -602,10 +441,8 @@ async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await query.message.reply_text("❌ Error fetching data for PDF.")
         except Exception as e:
             await query.message.reply_text(f"❌ PDF Generation Failed: {e}")
-            
         return RESULT_MENU
 
-    # 2. NAVIGATION LOGIC
     elif choice == 'NAV_SAME':
         text = f"{HEADER_TEXT}\n🔄 **Check Another** (Batch {context.user_data.get('batch')} | Sem {context.user_data.get('semester')})\n🔢 **Enter Reg No:**"
         await query.edit_message_text(text=text, parse_mode='Markdown')
@@ -626,8 +463,17 @@ async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await start(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 **Cancelled.**")
+    await update.message.reply_text("🚫 **Cancelled.** Type /start to restart.")
     return ConversationHandler.END
+
+# --- POST INIT: SET COMMANDS ---
+async def post_init(application: Application):
+    """Sets the bot commands menu when bot starts."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Restart Bot / Check Result"),
+        BotCommand("set", "Admin: Set Exam Date"),
+        BotCommand("view_config", "Admin: View Config")
+    ])
 
 # --- MAIN ---
 if __name__ == '__main__':
@@ -636,8 +482,10 @@ if __name__ == '__main__':
         keep_alive()
     except: pass
 
-    print("🤖 BEU Premium Bot (HTML PDF Enabled) Starting...")
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    print("🤖 BEU Premium Bot (PDF + Suggestions) Starting...")
+    
+    # Updated Builder to include post_init
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -647,10 +495,19 @@ if __name__ == '__main__':
             REG_NO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_result_handler)],
             RESULT_MENU: [CallbackQueryHandler(result_menu_handler)]
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[
+            CommandHandler('start', start), # Allows /start at any point
+            CommandHandler('cancel', cancel),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text) # Catches garbage text
+        ]
     )
 
     application.add_handler(conv_handler)
+    
+    # Global handler for unknown text when not in conversation
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
+    
+    # Admin Handlers
     application.add_handler(CommandHandler("set", set_exam_date))
     application.add_handler(CommandHandler("view_config", view_config))
 
