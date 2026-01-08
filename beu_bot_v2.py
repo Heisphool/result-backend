@@ -496,7 +496,7 @@ async def post_init(application: Application):
     """Sets the bot commands menu when bot starts."""
     await application.bot.set_my_commands([
         BotCommand("start", "Restart Bot / Check Result"),
-        BotCommand("set", "for Admin),
+        BotCommand("set", "Admin),
         BotCommand("view_config", "Admin: View Config")
     ])
 
