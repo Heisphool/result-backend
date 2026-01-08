@@ -1,5 +1,7 @@
 import logging
 import requests
+import io
+import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,6 +12,9 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
+
+# PDF Library (HTML to PDF)
+from xhtml2pdf import pisa
 
 # --- CONFIGURATION ---
 # ⚠️ Replace with your Bot Token
@@ -22,17 +27,17 @@ ADMIN_ID = 6716560182
 BASE_URL = "https://www.beu-bih.ac.in/backend/v1/result/get-result"
 
 # --- DEFAULT EXAM CONFIGURATION (Master List) ---
-# Admin can update this via /set command
 EXAM_CONFIG = {
+    "2025_I": "Jan/2026",
+    "2024_II": "Nov/2025",
+    "2024_I": "May/2025",
+    "2023_IV": "Dec/2025",
     "2023_III": "July/2025",
     "2023_II": "Dec/2024",
     "2023_I": "May/2024",
-    "2022_V": "July/2025",
     "2022_VI": "Nov/2025",
+    "2022_V": "July/2025",
     "2022_IV": "Dec/2024",
-    "2024_I": "May/2025",
-    "2024_II": "Nov/2025",
-    # Add more defaults here
 }
 
 # --- STATES ---
@@ -48,24 +53,324 @@ logging.basicConfig(
 HEADER_TEXT = "🌐 **Visit: beuhub.site**\n━━━━━━━━━━━━━━━━━━"
 FOOTER_TEXT = "━━━━━━━━━━━━━━━━━━\n🌐 **Powered by beuhub.site**"
 
-# --- HELPER: FORMAT RESULT (PREMIUM STYLE) ---
-def format_marksheet(data, batch, sem, exam_held):
+# --- HELPER: GENERATE PDF MARKSHEET (PHP DESIGN) ---
+def generate_pdf_in_memory(data, batch, sem, exam_held):
+    """
+    Creates a professional Marksheet PDF using HTML and CSS based on the PHP design.
+    """
+    
+    # 1. Prepare Data
     name = data.get('name', 'N/A')
     reg_no = data.get('redg_no', 'N/A')
     college = data.get('college_name', 'N/A')
+    college_code = data.get('college_code', '')
     course = data.get('course', 'B.Tech')
+    course_code = data.get('course_code', '')
+    father_name = data.get('father_name', 'N/A')
+    mother_name = data.get('mother_name', 'N/A')
     cgpa = data.get('cgpa', 'N/A')
     
-    # Attempt to get current SGPA
+    # Use current date as publish date since API might not give it
+    publish_date = datetime.date.today().strftime("%d-%b-%Y")
+    
+    # SGPA
     sgpa_list = data.get('sgpa', [])
     current_sgpa = "N/A"
     sem_map = {'I':0, 'II':1, 'III':2, 'IV':3, 'V':4, 'VI':5, 'VII':6, 'VIII':7}
+    if sem in sem_map and sem_map[sem] < len(sgpa_list):
+        val = sgpa_list[sem_map[sem]]
+        current_sgpa = val if val else "Pending"
+        
+    fail_raw = data.get('fail_any', '')
+    if fail_raw and "FAIL" in str(fail_raw):
+        remarks_text = "FAIL"
+        remarks_style = "color: red;"
+    else:
+        remarks_text = "PASS"
+        remarks_style = "color: green;"
+
+    # 2. Build Theory Rows (With Credits)
+    theory_rows = ""
+    if data.get('theorySubjects'):
+        for sub in data['theorySubjects']:
+            grade = sub.get('grade', '-')
+            grade_style = "color: red;" if grade == 'F' else "color: black;"
+            credit = sub.get('credit', '-')
+            theory_rows += f"""
+            <tr>
+                <td style="text-align:center;">{sub.get('code', '')}</td>
+                <td>{sub.get('name', '')}</td>
+                <td style="text-align:center;">{sub.get('ese', '-')}</td>
+                <td style="text-align:center;">{sub.get('ia', '-')}</td>
+                <td style="text-align:center; font-weight:bold;">{sub.get('total', '-')}</td>
+                <td style="text-align:center; font-weight:bold; {grade_style}">{grade}</td>
+                <td style="text-align:center;">{credit}</td>
+            </tr>
+            """
+    else:
+        theory_rows = "<tr><td colspan='7' style='text-align:center;'>No Theory Subjects</td></tr>"
+
+    # 3. Build Practical Rows (With Credits)
+    practical_rows = ""
+    if data.get('practicalSubjects'):
+        for sub in data['practicalSubjects']:
+            grade = sub.get('grade', '-')
+            grade_style = "color: red;" if grade == 'F' else "color: black;"
+            credit = sub.get('credit', '-')
+            practical_rows += f"""
+            <tr>
+                <td style="text-align:center;">{sub.get('code', '')}</td>
+                <td>{sub.get('name', '')}</td>
+                <td style="text-align:center;">{sub.get('ese', '-')}</td>
+                <td style="text-align:center;">{sub.get('ia', '-')}</td>
+                <td style="text-align:center; font-weight:bold;">{sub.get('total', '-')}</td>
+                <td style="text-align:center; font-weight:bold; {grade_style}">{grade}</td>
+                <td style="text-align:center;">{credit}</td>
+            </tr>
+            """
+
+    # 4. Build Academic Progress (SGPA History)
+    sem_romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII']
+    history_header = ""
+    history_data = ""
+    for idx, rom in enumerate(sem_romans):
+        history_header += f"<th style='width: 11%;'>{rom}</th>"
+        val = "-"
+        if idx < len(sgpa_list) and sgpa_list[idx] is not None:
+             val = sgpa_list[idx]
+        history_data += f"<td>{val}</td>"
+
+    # 5. HTML Template with CSS (From PHP Design)
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            @page {{
+                size: A4;
+                margin: 1cm;
+                @bottom-center {{
+                    content: "Generated via BEU Result Bot | beuhub.site";
+                    font-family: 'Times New Roman', serif;
+                    font-size: 9pt;
+                    color: #777;
+                }}
+            }}
+            body {{
+                font-family: 'Times New Roman', serif;
+                font-size: 12px;
+                color: #000;
+            }}
+            .univ-title {{
+                font-size: 22pt;
+                font-weight: bold;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                line-height: 1.2;
+                color: #000;
+                text-align: center;
+            }}
+            .sub-title {{
+                font-size: 14pt;
+                font-weight: bold;
+                margin-top: 5px;
+                color: #333;
+                text-align: center;
+            }}
+            .exam-session {{
+                font-size: 11pt;
+                margin-top: 5px;
+                font-weight: bold;
+                text-align: center;
+            }}
+            
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 10.5pt;
+                margin-bottom: 15px;
+            }}
+            
+            /* Marks Table */
+            .marks-table th {{
+                background-color: #f0f0f0;
+                font-weight: bold;
+                text-transform: uppercase;
+                font-size: 9pt;
+                border: 1px solid #000;
+                padding: 4px 6px;
+                text-align: center;
+            }}
+            .marks-table td {{
+                border: 1px solid #000;
+                padding: 4px 6px;
+                vertical-align: middle;
+            }}
+            
+            /* Info Table */
+            .info-table td {{
+                padding: 5px 2px;
+                vertical-align: top;
+                border: none;
+            }}
+            
+            .summary-box {{
+                border: 1px solid #000;
+                padding: 10px;
+                margin-top: 10px;
+                background-color: #fafafa;
+            }}
+            
+            .header-container {{
+                text-align: center;
+                margin-bottom: 20px;
+                border-bottom: 1px solid #000;
+                padding-bottom: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+
+        <!-- Header -->
+        <div class="header-container">
+            <div class="univ-title">Bihar Engineering University</div>
+            <div class="sub-title">Patna, Bihar</div>
+            <div style="margin-top:10px; font-size:12pt; font-weight:bold; text-transform: uppercase; text-align: center;">
+                B.Tech {sem} Semester Examination
+            </div>
+            <div class="exam-session">Session: {exam_held}</div>
+        </div>
+
+        <!-- Student Info -->
+        <table class="info-table">
+            <tr>
+                <td style="width: 140px;"><strong>Registration No:</strong></td>
+                <td style="font-weight:bold; font-family:'Courier New', monospace; font-size: 12pt;">{reg_no}</td>
+            </tr>
+            <tr>
+                <td><strong>Student Name:</strong></td>
+                <td style="font-weight:bold; text-transform:uppercase;">{name}</td>
+            </tr>
+            <tr>
+                <td><strong>Father Name:</strong></td>
+                <td>{father_name}</td>
+                <td style="width: 120px;"><strong>Mother Name:</strong></td>
+                <td>{mother_name}</td>
+            </tr>
+            <tr>
+                <td><strong>College Name:</strong></td>
+                <td colspan="3">{college_code} - {college}</td>
+            </tr>
+            <tr>
+                <td><strong>Course Name:</strong></td>
+                <td colspan="3">{course_code} - {course}</td>
+            </tr>
+        </table>
+
+        <!-- Theory Marks -->
+        <div style="font-weight:bold; margin-bottom:5px; text-decoration: underline;">THEORY</div>
+        <table class="marks-table">
+            <thead>
+                <tr>
+                    <th style="width: 15%;">Subject Code</th>
+                    <th style="text-align: left;">Subject Name</th>
+                    <th style="width: 8%;">ESE</th>
+                    <th style="width: 8%;">IA</th>
+                    <th style="width: 8%;">Total</th>
+                    <th style="width: 8%;">Grade</th>
+                    <th style="width: 8%;">Credit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {theory_rows}
+            </tbody>
+        </table>
+
+        <!-- Practical Marks -->
+        <div style="font-weight:bold; margin-bottom:5px; margin-top:15px; text-decoration: underline;">PRACTICAL</div>
+        <table class="marks-table">
+            <thead>
+                <tr>
+                    <th style="width: 15%;">Subject Code</th>
+                    <th style="text-align: left;">Subject Name</th>
+                    <th style="width: 8%;">ESE</th>
+                    <th style="width: 8%;">IA</th>
+                    <th style="width: 8%;">Total</th>
+                    <th style="width: 8%;">Grade</th>
+                    <th style="width: 8%;">Credit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {practical_rows}
+            </tbody>
+        </table>
+
+        <!-- Academic Progress -->
+        <div style="font-weight:bold; margin-bottom:5px; margin-top:15px; text-decoration: underline;">ACADEMIC PROGRESS</div>
+        <table class="marks-table" style="text-align: center;">
+            <thead>
+                <tr>
+                    {history_header}
+                    <th style="width: 12%; background-color: #333; color: white;">Cur. CGPA</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    {history_data}
+                    <td style="font-weight: bold;">{cgpa}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Summary -->
+        <div class="summary-box">
+            <table style="width: 100%; border: none; margin: 0;">
+                <tr style="border: none;">
+                    <td style="border: none; text-align: left; width: 33%;">
+                        <strong>SGPA: </strong> <span style="font-size: 14pt; border: 2px solid #000; padding: 2px 8px; margin-left: 5px;">{current_sgpa}</span>
+                    </td>
+                    <td style="border: none; text-align: center; width: 33%;">
+                        <strong>CGPA: </strong> <span>{cgpa}</span>
+                    </td>
+                    <td style="border: none; text-align: right; width: 33%;">
+                        <strong>REMARKS: </strong> <span style="font-weight: bold; {remarks_style}">{remarks_text}</span>
+                    </td>
+                </tr>
+            </table>
+        </div>
+
+        <div style="margin-top: 10px; font-size: 10pt;">
+            <strong>Publish Date:</strong> {publish_date}
+        </div>
+
+    </body>
+    </html>
+    """
+
+    # 6. Convert HTML to PDF
+    pdf_file = io.BytesIO()
+    pisa_status = pisa.CreatePDF(io.BytesIO(html_content.encode("utf-8")), dest=pdf_file)
     
+    if pisa_status.err:
+        return None
+        
+    pdf_file.seek(0)
+    return pdf_file
+
+# --- HELPER: FORMAT RESULT TEXT (CHAT VERSION) ---
+def format_marksheet_text(data, batch, sem, exam_held):
+    name = data.get('name', 'N/A')
+    reg_no = data.get('redg_no', 'N/A')
+    college = data.get('college_name', 'N/A')
+    
+    # Get SGPA
+    sgpa_list = data.get('sgpa', [])
+    current_sgpa = "N/A"
+    sem_map = {'I':0, 'II':1, 'III':2, 'IV':3, 'V':4, 'VI':5, 'VII':6, 'VIII':7}
     if sem in sem_map and sem_map[sem] < len(sgpa_list):
         val = sgpa_list[sem_map[sem]]
         current_sgpa = val if val else "Pending"
 
-    # Fail Status Logic
     fail_raw = data.get('fail_any', '')
     if fail_raw and "FAIL" in str(fail_raw):
         status_icon = "🔴 FAIL"
@@ -74,59 +379,40 @@ def format_marksheet(data, batch, sem, exam_held):
         status_icon = "🟢 PASS"
         status_details = "All Clear! Excellent Work. 🎉"
 
-    # --- BUILDING THE MESSAGE ---
     msg = f"{HEADER_TEXT}\n"
     msg += f"🏛 **BEU OFFICIAL RESULT**\n"
     msg += f"📅 `Batch {batch} | Sem {sem} ({exam_held})`\n"
     msg += "━━━━━━━━━━━━━━━━━━\n"
-    
-    # Student Profile
     msg += f"👤 **{name}**\n"
     msg += f"🆔 `{reg_no}`\n"
     msg += f"🏫 _{college}_\n"
     msg += "━━━━━━━━━━━━━━━━━━\n"
-
-    # Theory Papers
     msg += "📝 **THEORY PAPERS**\n"
+    
     if data.get('theorySubjects'):
         for sub in data['theorySubjects']:
             grade = sub['grade']
-            # Highlight Fail Grades
             grade_display = f"⚠️ {grade}" if grade == 'F' else f"✅ {grade}"
-            
             msg += f"**• {sub['name']}** `({sub['code']})`\n"
-            msg += f"   └ Marks: `{sub['total']}` (Ext:{sub['ese']} + Int:{sub['ia']}) | Gd: {grade_display}\n"
+            msg += f"   └ Marks: `{sub['total']}` (E:{sub['ese']}+I:{sub['ia']}) | Gd: {grade_display}\n"
     else:
         msg += "   _(No Theory Data Available)_\n"
     
-    msg += "\n"
-
-    # Practical Papers
-    msg += "🛠 **PRACTICALS**\n"
+    msg += "\n🛠 **PRACTICALS**\n"
     if data.get('practicalSubjects'):
         for sub in data['practicalSubjects']:
             msg += f"**• {sub['name']}**\n"
             msg += f"   └ Marks: `{sub['total']}` | Grade: {sub['grade']}\n"
-    else:
-        msg += "   _(No Practical Data Available)_\n"
-
+            
     msg += "━━━━━━━━━━━━━━━━━━\n"
-    
-    # Final Stats
-    msg += f"📊 **PERFORMANCE SUMMARY**\n"
-    msg += f"🔹 **SGPA:** `{current_sgpa}`\n"
-    msg += f"🔸 **CGPA:** `{cgpa}`\n"
+    msg += f"🔹 **SGPA:** `{current_sgpa}` | 🔸 **CGPA:** `{data.get('cgpa', 'N/A')}`\n"
     msg += f"🏁 **STATUS:** {status_icon}\n"
     msg += f"📢 {status_details}\n"
-    
     msg += f"{FOOTER_TEXT}"
-    
     return msg
 
 # --- ADMIN COMMANDS ---
-
 async def set_exam_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin Command: /set 2023 III July/2025"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ **Access Denied.** Admin only.")
@@ -135,110 +421,74 @@ async def set_exam_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
         if len(args) < 3:
-            await update.message.reply_text(
-                "⚠️ **Usage:** `/set <Batch> <Sem> <Month/Year>`\n"
-                "Example: `/set 2023 III July/2025`", 
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text("⚠️ Usage: `/set 2023 III July/2025`", parse_mode='Markdown')
             return
 
         batch = args[0]
         sem = args[1]
         exam_date = args[2] 
-        
-        key = f"{batch}_{sem}"
-        EXAM_CONFIG[key] = exam_date
-        
-        await update.message.reply_text(f"✅ **Configuration Saved!**\nBatch: `{batch}`\nSem: `{sem}`\nExam Date: `{exam_date}`", parse_mode='Markdown')
-
+        EXAM_CONFIG[f"{batch}_{sem}"] = exam_date
+        await update.message.reply_text(f"✅ Saved: `{batch}` | `{sem}` | `{exam_date}`", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def view_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows all saved Exam Configurations."""
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-
-    msg = "⚙️ **Active Exam Configurations:**\n\n"
-    if not EXAM_CONFIG:
-        msg += "❌ No configurations set. Use /set command."
-    else:
-        for key, val in EXAM_CONFIG.items():
-            b, s = key.split('_')
-            msg += f"🔹 **Batch {b} (Sem {s}):** `{val}`\n"
-    
+    if update.effective_user.id != ADMIN_ID: return
+    msg = "⚙️ **Active Configurations:**\n\n"
+    for key, val in EXAM_CONFIG.items():
+        b, s = key.split('_')
+        msg += f"🔹 **{b} (Sem {s}):** `{val}`\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-# --- USER FLOW HANDLERS ---
-
+# --- USER HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts the bot."""
     user = update.effective_user.first_name
-    
-    # Intro Message
     intro = (
         f"{HEADER_TEXT}\n"
         f"👋 **Hello {user}!**\n\n"
         "🎓 **Welcome to the BEU Result Portal.**\n"
-        "Get your official results instantly with a verified mark sheet.\n\n"
-        "👇 **Please select your Batch Year to begin:**"
+        "Get your official results instantly with a mark sheet.\n\n"
+        "👇 **Please select your Batch Year:**"
     )
-    
-    # Batch Buttons
     keyboard = [
-        [InlineKeyboardButton("2022", callback_data='2022')],
-        [InlineKeyboardButton("2023", callback_data='2023'), InlineKeyboardButton("2024", callback_data='2024')],
-        [InlineKeyboardButton("2025", callback_data='2025')]
+        [InlineKeyboardButton("2022", callback_data='2022'), InlineKeyboardButton("2023", callback_data='2023')],
+        [InlineKeyboardButton("2024", callback_data='2024'), InlineKeyboardButton("2025", callback_data='2025')],
+        [InlineKeyboardButton("2026", callback_data='2026')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     if update.callback_query:
         await update.callback_query.edit_message_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
-        
     return BATCH
 
 async def batch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    context.user_data['batch'] = query.data
     
-    batch = query.data
-    context.user_data['batch'] = batch
-    
-    text = (
-        f"{HEADER_TEXT}\n"
-        f"✅ **Batch {batch} Selected.**\n"
-        f"👇 Now, please select your **Semester**:"
-    )
-    
-    # Semester Buttons
     keyboard = [
         [InlineKeyboardButton("Sem I", callback_data='I'), InlineKeyboardButton("Sem II", callback_data='II')],
         [InlineKeyboardButton("Sem III", callback_data='III'), InlineKeyboardButton("Sem IV", callback_data='IV')],
         [InlineKeyboardButton("Sem V", callback_data='V'), InlineKeyboardButton("Sem VI", callback_data='VI')],
         [InlineKeyboardButton("Sem VII", callback_data='VII'), InlineKeyboardButton("Sem VIII", callback_data='VIII')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text(
+        f"{HEADER_TEXT}\n✅ **Batch {query.data} Selected.**\n👇 Select **Semester**:", 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode='Markdown'
+    )
     return SEMESTER
 
 async def semester_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    sem = query.data
-    context.user_data['semester'] = sem
-    
-    text = (
-        f"{HEADER_TEXT}\n"
-        f"✅ **Batch {context.user_data['batch']} | Semester {sem}**\n\n"
-        f"🔢 **Enter Registration Number:**\n"
-        f"_(Example: 23103132004)_"
+    context.user_data['semester'] = query.data
+    await query.edit_message_text(
+        f"{HEADER_TEXT}\n✅ **Batch {context.user_data['batch']} | Sem {query.data}**\n\n"
+        f"🔢 **Enter Registration Number:**\n_(e.g. 23101132025)_", 
+        parse_mode='Markdown'
     )
-    
-    await query.edit_message_text(text=text, parse_mode='Markdown')
     return REG_NO
 
 async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,46 +496,32 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     batch = context.user_data.get('batch')
     sem = context.user_data.get('semester')
     
-    # Validation
     if not reg_no.isdigit():
-        await update.message.reply_text("❌ **Invalid Input!**\nPlease enter digits only (e.g., 23103132004).")
+        await update.message.reply_text("❌ **Invalid Input!** Digits only.")
         return REG_NO
 
-    # Check Configuration
+    # Store Reg No for PDF generation
+    context.user_data['reg_no'] = reg_no
+
     config_key = f"{batch}_{sem}"
     exam_held = EXAM_CONFIG.get(config_key)
     
     if not exam_held:
-        error_msg = (
-            f"{HEADER_TEXT}\n"
-            f"⚠️ **Result Not Available Yet!**\n"
-            f"Exam Date not configured for **Batch {batch} - Sem {sem}**.\n"
-            f"Please contact Admin to update settings.\n"
-            f"{FOOTER_TEXT}"
-        )
-        await update.message.reply_text(error_msg, parse_mode='Markdown')
+        await update.message.reply_text(f"⚠️ **Result Not Available Yet!**\nAdmin config missing for {batch}-{sem}.")
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text(f"⏳ **Fetching Result...**\nConnecting to BEU Server...", parse_mode='Markdown')
+    status_msg = await update.message.reply_text("⏳ **Fetching Result...**")
 
-    # API Request
-    params = {
-        "year": batch,
-        "redg_no": reg_no,
-        "semester": sem,
-        "exam_held": exam_held
-    }
+    params = {"year": batch, "redg_no": reg_no, "semester": sem, "exam_held": exam_held}
 
     try:
         response = requests.get(BASE_URL, params=params)
         data = response.json()
         
-        # Check API Success
         if response.status_code == 200 and data.get('status') == 200 and data.get('data'):
-            # Generate Premium Marksheet
-            result_text = format_marksheet(data['data'], batch, sem, exam_held)
+            # Text Result
+            result_text = format_marksheet_text(data['data'], batch, sem, exam_held)
             
-            # Send Result
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, 
                 message_id=status_msg.message_id, 
@@ -293,102 +529,105 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode='Markdown'
             )
             
-            # --- SMART NAVIGATION MENU ---
-            nav_text = (
-                "👇 **What would you like to do next?**\n"
-                "Select an option below:"
-            )
-            
+            # --- MENU WITH PDF OPTION ---
             keyboard = [
+                [InlineKeyboardButton("📥 Download PDF Marksheet", callback_data='NAV_PDF')],
                 [InlineKeyboardButton("🔍 Check Another (Same Sem)", callback_data='NAV_SAME')],
                 [InlineKeyboardButton("📂 Change Semester", callback_data='NAV_SEM')],
-                [InlineKeyboardButton("🏠 Main Menu / Change Batch", callback_data='NAV_HOME')]
+                [InlineKeyboardButton("🏠 Main Menu", callback_data='NAV_HOME')]
             ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(text=nav_text, reply_markup=reply_markup)
-            
-            # Transition to Menu State
+            await update.message.reply_text(
+                "👇 **Actions:**", 
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return RESULT_MENU
-            
         else:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, 
                 message_id=status_msg.message_id, 
-                text=f"❌ **Result Not Found.**\nNo record found for Reg No: `{reg_no}` in this semester.\n\n{FOOTER_TEXT}",
+                text=f"❌ **Result Not Found.**\nCheck Reg No: `{reg_no}`", 
                 parse_mode='Markdown'
             )
             return ConversationHandler.END
 
     except Exception as e:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id, 
-            message_id=status_msg.message_id, 
-            text=f"❌ **Server Error:** {str(e)}\nPlease try again later.",
-            parse_mode='Markdown'
-        )
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ Error: {str(e)}")
         return ConversationHandler.END
 
-# --- RESULT MENU HANDLER ---
+# --- RESULT MENU HANDLER (Includes PDF Logic) ---
 async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the navigation buttons after result is shown."""
     query = update.callback_query
     await query.answer()
-    
     choice = query.data
     
-    if choice == 'NAV_SAME':
-        # User wants to check same Batch/Sem -> Ask Reg No
+    # 1. GENERATE PDF (Using HTML/CSS)
+    if choice == 'NAV_PDF':
+        await query.message.reply_text("⏳ **Generating PDF... Please wait.**")
+        
         batch = context.user_data.get('batch')
         sem = context.user_data.get('semester')
-        text = (
-            f"{HEADER_TEXT}\n"
-            f"🔄 **Check Another Result**\n"
-            f"Batch: {batch} | Sem: {sem}\n\n"
-            f"🔢 **Enter Registration Number:**"
-        )
+        reg_no = context.user_data.get('reg_no')
+        exam_held = EXAM_CONFIG.get(f"{batch}_{sem}")
+        
+        params = {"year": batch, "redg_no": reg_no, "semester": sem, "exam_held": exam_held}
+        try:
+            response = requests.get(BASE_URL, params=params)
+            data = response.json()
+            if data.get('data'):
+                # Generate PDF using HTML Helper
+                pdf_file = generate_pdf_in_memory(data['data'], batch, sem, exam_held)
+                
+                if pdf_file:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=pdf_file,
+                        filename=f"BEU_Result_{reg_no}_{sem}.pdf",
+                        caption=f"📄 **Official Marksheet**\nReg No: {reg_no}\n{FOOTER_TEXT}",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await query.message.reply_text("❌ Error creating PDF file.")
+            else:
+                await query.message.reply_text("❌ Error fetching data for PDF.")
+        except Exception as e:
+            await query.message.reply_text(f"❌ PDF Generation Failed: {e}")
+            
+        return RESULT_MENU
+
+    # 2. NAVIGATION LOGIC
+    elif choice == 'NAV_SAME':
+        text = f"{HEADER_TEXT}\n🔄 **Check Another** (Batch {context.user_data.get('batch')} | Sem {context.user_data.get('semester')})\n🔢 **Enter Reg No:**"
         await query.edit_message_text(text=text, parse_mode='Markdown')
         return REG_NO
         
     elif choice == 'NAV_SEM':
-        # User wants to change Semester (Keep Batch)
-        text = (
-            f"{HEADER_TEXT}\n"
-            f"📂 **Change Semester** (Batch: {context.user_data.get('batch')})\n"
-            f"👇 Select new Semester:"
-        )
         keyboard = [
             [InlineKeyboardButton("Sem I", callback_data='I'), InlineKeyboardButton("Sem II", callback_data='II')],
             [InlineKeyboardButton("Sem III", callback_data='III'), InlineKeyboardButton("Sem IV", callback_data='IV')],
             [InlineKeyboardButton("Sem V", callback_data='V'), InlineKeyboardButton("Sem VI", callback_data='VI')],
             [InlineKeyboardButton("Sem VII", callback_data='VII'), InlineKeyboardButton("Sem VIII", callback_data='VIII')]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+        text = f"{HEADER_TEXT}\n📂 **Change Semester** (Batch {context.user_data.get('batch')})\n👇 Select Semester:"
+        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return SEMESTER
         
     elif choice == 'NAV_HOME':
-        # Go back to start
         return await start(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 **Operation Cancelled.** Type /start to restart.")
+    await update.message.reply_text("🚫 **Cancelled.**")
     return ConversationHandler.END
 
-# --- MAIN EXECUTION ---
+# --- MAIN ---
 if __name__ == '__main__':
-    # 1. Start Keep-Alive (For Render)
     try:
         from keep_alive import keep_alive
         keep_alive()
-        print("✅ Web Server Started (Render Mode)")
-    except ImportError:
-        print("⚠️ keep_alive.py not found. Running in Local Mode.")
+    except: pass
 
-    print("🤖 BEU Premium Bot Starting...")
+    print("🤖 BEU Premium Bot (HTML PDF Enabled) Starting...")
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 2. Conversation Handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -401,10 +640,7 @@ if __name__ == '__main__':
     )
 
     application.add_handler(conv_handler)
-    
-    # 3. Admin Handlers
     application.add_handler(CommandHandler("set", set_exam_date))
     application.add_handler(CommandHandler("view_config", view_config))
 
-    # 4. Run
     application.run_polling()
