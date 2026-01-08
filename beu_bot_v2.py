@@ -15,33 +15,40 @@ from telegram.ext import (
 # ⚠️ Replace with your Bot Token
 BOT_TOKEN = "8541634623:AAETR1SvO0or9cXE85lQBL4y2ChvwGZX36o"
 
-# ⚠️ Updated Admin ID (Phool Babu)
+# ⚠️ Admin ID (Phool Babu)
 ADMIN_ID = 6716560182
 
 # API Base URL
 BASE_URL = "https://www.beu-bih.ac.in/backend/v1/result/get-result"
 
 # --- DEFAULT EXAM CONFIGURATION (Master List) ---
-# Format: "BATCH_SEM": "Month/Year"
-# Isme aap default values pehle se save kar sakte hain
+# Admin can update this via /set command
 EXAM_CONFIG = {
     "2023_III": "July/2025",
     "2023_II": "Dec/2024",
     "2023_I": "May/2024",
     "2022_V": "July/2025",
+    "2022_VI": "Nov/2025",
     "2022_IV": "Dec/2024",
+    "2024_I": "May/2025",
+    "2024_II": "Nov/2025",
+    # Add more defaults here
 }
 
 # --- STATES ---
-BATCH, SEMESTER, REG_NO = range(3)
+BATCH, SEMESTER, REG_NO, RESULT_MENU = range(4)
 
-# Logging
+# --- LOGGING ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# --- HELPER: FORMAT RESULT (Marksheet Style) ---
+# --- HELPER: BRANDING ---
+HEADER_TEXT = "🌐 **Visit: beuhub.site**\n━━━━━━━━━━━━━━━━━━"
+FOOTER_TEXT = "━━━━━━━━━━━━━━━━━━\n🌐 **Powered by beuhub.site**"
+
+# --- HELPER: FORMAT RESULT (PREMIUM STYLE) ---
 def format_marksheet(data, batch, sem, exam_held):
     name = data.get('name', 'N/A')
     reg_no = data.get('redg_no', 'N/A')
@@ -49,85 +56,80 @@ def format_marksheet(data, batch, sem, exam_held):
     course = data.get('course', 'B.Tech')
     cgpa = data.get('cgpa', 'N/A')
     
-    # SGPA logic
+    # Attempt to get current SGPA
     sgpa_list = data.get('sgpa', [])
-    # Assuming sem is roman 'III', convert to index if needed, or just fetch directly if logic allows
-    # For now, let's try to grab the latest non-null SGPA or specific one if logic permits
-    # Simple workaround: Just show "Current Sem SGPA" if available in array
     current_sgpa = "N/A"
     sem_map = {'I':0, 'II':1, 'III':2, 'IV':3, 'V':4, 'VI':5, 'VII':6, 'VIII':7}
+    
     if sem in sem_map and sem_map[sem] < len(sgpa_list):
         val = sgpa_list[sem_map[sem]]
         current_sgpa = val if val else "Pending"
 
-    # Fail Status
+    # Fail Status Logic
     fail_raw = data.get('fail_any', '')
     if fail_raw and "FAIL" in str(fail_raw):
         status_icon = "🔴 FAIL"
-        status_text = f"Backlog: {fail_raw.replace('FAIL:', '')}"
+        status_details = f"Backlog: {fail_raw.replace('FAIL:', '')}"
     else:
         status_icon = "🟢 PASS"
-        status_text = "All Clear! 🎉"
+        status_details = "All Clear! Excellent Work. 🎉"
 
-    # Header
-    msg = f"🏛 **BIHAR ENGINEERING UNIVERSITY**\n"
-    msg += f"🗓 `Batch {batch} | Sem {sem} ({exam_held})`\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    # --- BUILDING THE MESSAGE ---
+    msg = f"{HEADER_TEXT}\n"
+    msg += f"🏛 **BEU OFFICIAL RESULT**\n"
+    msg += f"📅 `Batch {batch} | Sem {sem} ({exam_held})`\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n"
     
-    # Student Details
+    # Student Profile
     msg += f"👤 **{name}**\n"
     msg += f"🆔 `{reg_no}`\n"
-    msg += f"🏫 {college}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"🏫 _{college}_\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n"
 
-    # Theory Subjects
+    # Theory Papers
     msg += "📝 **THEORY PAPERS**\n"
     if data.get('theorySubjects'):
         for sub in data['theorySubjects']:
             grade = sub['grade']
-            # Make Grade Bold if Fail
-            grade_display = f"**{grade}**" if grade == 'F' else f"{grade}"
+            # Highlight Fail Grades
+            grade_display = f"⚠️ {grade}" if grade == 'F' else f"✅ {grade}"
             
             msg += f"**• {sub['name']}** `({sub['code']})`\n"
-            msg += f"   ├─ Marks: `{sub['total']}` (Ext:{sub['ese']} + Int:{sub['ia']})\n"
-            msg += f"   └─ Grade: {grade_display}\n"
+            msg += f"   └ Marks: `{sub['total']}` (Ext:{sub['ese']} + Int:{sub['ia']}) | Gd: {grade_display}\n"
     else:
-        msg += "   (No Theory Data)\n"
+        msg += "   _(No Theory Data Available)_\n"
     
     msg += "\n"
 
-    # Practical Subjects
-    msg += "🛠 **PRACTICAL / SESSIONAL**\n"
+    # Practical Papers
+    msg += "🛠 **PRACTICALS**\n"
     if data.get('practicalSubjects'):
         for sub in data['practicalSubjects']:
             msg += f"**• {sub['name']}**\n"
-            msg += f"   └─ Marks: `{sub['total']}` | Grade: {sub['grade']}\n"
+            msg += f"   └ Marks: `{sub['total']}` | Grade: {sub['grade']}\n"
     else:
-        msg += "   (No Practical Data)\n"
+        msg += "   _(No Practical Data Available)_\n"
 
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n"
     
-    # Footer Stats
-    msg += f"📊 **PERFORMANCE REPORT**\n"
-    msg += f"🔹 **SGPA:** `{current_sgpa}`  |  🔸 **CGPA:** `{cgpa}`\n"
+    # Final Stats
+    msg += f"📊 **PERFORMANCE SUMMARY**\n"
+    msg += f"🔹 **SGPA:** `{current_sgpa}`\n"
+    msg += f"🔸 **CGPA:** `{cgpa}`\n"
     msg += f"🏁 **STATUS:** {status_icon}\n"
-    if "FAIL" in status_icon:
-        msg += f"⚠️ {status_text}\n"
+    msg += f"📢 {status_details}\n"
     
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "🤖 *Generated via BEUHub Bot*"
+    msg += f"{FOOTER_TEXT}"
     
     return msg
 
 # --- ADMIN COMMANDS ---
 
 async def set_exam_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin Command: /set 2023 III July/2025
-    """
+    """Admin Command: /set 2023 III July/2025"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ **Admin Access Only.**\nYou are not authorized.")
+        await update.message.reply_text("⛔ **Access Denied.** Admin only.")
         return
 
     try:
@@ -147,7 +149,7 @@ async def set_exam_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = f"{batch}_{sem}"
         EXAM_CONFIG[key] = exam_date
         
-        await update.message.reply_text(f"✅ **Config Saved!**\nBatch: `{batch}`\nSem: `{sem}`\nExam: `{exam_date}`", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ **Configuration Saved!**\nBatch: `{batch}`\nSem: `{sem}`\nExam Date: `{exam_date}`", parse_mode='Markdown')
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
@@ -156,7 +158,6 @@ async def view_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows all saved Exam Configurations."""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Not Authorized.")
         return
 
     msg = "⚙️ **Active Exam Configurations:**\n\n"
@@ -165,31 +166,38 @@ async def view_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         for key, val in EXAM_CONFIG.items():
             b, s = key.split('_')
-            msg += f"🔹 **{b} (Sem {s}):** `{val}`\n"
+            msg += f"🔹 **Batch {b} (Sem {s}):** `{val}`\n"
     
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-# --- USER FLOW COMMANDS ---
+# --- USER FLOW HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts the bot."""
     user = update.effective_user.first_name
-    await update.message.reply_text(
-        f"👋 **Namaste {user}!**\n\n"
-        "🎓 **BEU Result Portal** me aapka swagat hai.\n"
-        "Yahan aap apna official marksheet check kar sakte hain.\n\n"
-        "👇 **Shuru karne ke liye apna Batch select karein:**",
-        parse_mode='Markdown'
+    
+    # Intro Message
+    intro = (
+        f"{HEADER_TEXT}\n"
+        f"👋 **Hello {user}!**\n\n"
+        "🎓 **Welcome to the BEU Result Portal.**\n"
+        "Get your official results instantly with a verified mark sheet.\n\n"
+        "👇 **Please select your Batch Year to begin:**"
     )
     
     # Batch Buttons
     keyboard = [
-        [InlineKeyboardButton("2021", callback_data='2021'), InlineKeyboardButton("2022", callback_data='2022')],
+        [InlineKeyboardButton("2022", callback_data='2022')],
         [InlineKeyboardButton("2023", callback_data='2023'), InlineKeyboardButton("2024", callback_data='2024')],
         [InlineKeyboardButton("2025", callback_data='2025')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🔹 **Select Batch Year:**", reply_markup=reply_markup)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text=intro, reply_markup=reply_markup, parse_mode='Markdown')
+        
     return BATCH
 
 async def batch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,7 +207,11 @@ async def batch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batch = query.data
     context.user_data['batch'] = batch
     
-    await query.edit_message_text(f"✅ **Batch {batch}** Selected.\n👇 Ab apna **Semester** select karein:")
+    text = (
+        f"{HEADER_TEXT}\n"
+        f"✅ **Batch {batch} Selected.**\n"
+        f"👇 Now, please select your **Semester**:"
+    )
     
     # Semester Buttons
     keyboard = [
@@ -209,7 +221,7 @@ async def batch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Sem VII", callback_data='VII'), InlineKeyboardButton("Sem VIII", callback_data='VIII')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.reply_text("🔹 **Select Semester:**", reply_markup=reply_markup)
+    await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
     return SEMESTER
 
 async def semester_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,12 +231,14 @@ async def semester_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sem = query.data
     context.user_data['semester'] = sem
     
-    await query.edit_message_text(
-        f"✅ **Semester {sem}** Selected.\n\n"
-        f"🔢 Please type your **Registration Number**:\n"
-        f"(Example: `23103132004`)",
-        parse_mode='Markdown'
+    text = (
+        f"{HEADER_TEXT}\n"
+        f"✅ **Batch {context.user_data['batch']} | Semester {sem}**\n\n"
+        f"🔢 **Enter Registration Number:**\n"
+        f"_(Example: 23103132004)_"
     )
+    
+    await query.edit_message_text(text=text, parse_mode='Markdown')
     return REG_NO
 
 async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,25 +246,29 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     batch = context.user_data.get('batch')
     sem = context.user_data.get('semester')
     
+    # Validation
     if not reg_no.isdigit():
-        await update.message.reply_text("❌ **Invalid Input!**\nSirf numbers enter karein (e.g. 23103132004).")
+        await update.message.reply_text("❌ **Invalid Input!**\nPlease enter digits only (e.g., 23103132004).")
         return REG_NO
 
-    # Check Config
+    # Check Configuration
     config_key = f"{batch}_{sem}"
     exam_held = EXAM_CONFIG.get(config_key)
     
     if not exam_held:
-        await update.message.reply_text(
-            f"⚠️ **Data Not Found!**\n"
-            f"Admin ne abhi **Batch {batch} - Sem {sem}** ka date set nahi kiya hai.\n"
-            f"Please contact Admin (@PhoolBabu) to update settings."
+        error_msg = (
+            f"{HEADER_TEXT}\n"
+            f"⚠️ **Result Not Available Yet!**\n"
+            f"Exam Date not configured for **Batch {batch} - Sem {sem}**.\n"
+            f"Please contact Admin to update settings.\n"
+            f"{FOOTER_TEXT}"
         )
+        await update.message.reply_text(error_msg, parse_mode='Markdown')
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text(f"⏳ **Connecting to BEU Server...**\nFetching result for Reg: {reg_no}", parse_mode='Markdown')
+    status_msg = await update.message.reply_text(f"⏳ **Fetching Result...**\nConnecting to BEU Server...", parse_mode='Markdown')
 
-    # API Call
+    # API Request
     params = {
         "year": batch,
         "redg_no": reg_no,
@@ -262,51 +280,104 @@ async def get_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         response = requests.get(BASE_URL, params=params)
         data = response.json()
         
-        # Check Success
+        # Check API Success
         if response.status_code == 200 and data.get('status') == 200 and data.get('data'):
             # Generate Premium Marksheet
             result_text = format_marksheet(data['data'], batch, sem, exam_held)
             
+            # Send Result
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, 
                 message_id=status_msg.message_id, 
                 text=result_text, 
                 parse_mode='Markdown'
             )
+            
+            # --- SMART NAVIGATION MENU ---
+            nav_text = (
+                "👇 **What would you like to do next?**\n"
+                "Select an option below:"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔍 Check Another (Same Sem)", callback_data='NAV_SAME')],
+                [InlineKeyboardButton("📂 Change Semester", callback_data='NAV_SEM')],
+                [InlineKeyboardButton("🏠 Main Menu / Change Batch", callback_data='NAV_HOME')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(text=nav_text, reply_markup=reply_markup)
+            
+            # Transition to Menu State
+            return RESULT_MENU
+            
         else:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, 
                 message_id=status_msg.message_id, 
-                text="❌ **Result Not Found.**\nPlease check Reg No or try again later."
+                text=f"❌ **Result Not Found.**\nNo record found for Reg No: `{reg_no}` in this semester.\n\n{FOOTER_TEXT}",
+                parse_mode='Markdown'
             )
+            return ConversationHandler.END
 
     except Exception as e:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id, 
             message_id=status_msg.message_id, 
-            text=f"❌ **Server Error:** {str(e)}"
+            text=f"❌ **Server Error:** {str(e)}\nPlease try again later.",
+            parse_mode='Markdown'
         )
-    
-    # Restart Button
-    keyboard = [[InlineKeyboardButton("🔄 Check Another Result", callback_data='restart')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Check another student?", reply_markup=reply_markup)
+        return ConversationHandler.END
 
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚫 **Cancelled.** /start to restart.")
-    return ConversationHandler.END
-
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- RESULT MENU HANDLER ---
+async def result_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the navigation buttons after result is shown."""
     query = update.callback_query
     await query.answer()
-    await start(update, context) 
-    return BATCH
+    
+    choice = query.data
+    
+    if choice == 'NAV_SAME':
+        # User wants to check same Batch/Sem -> Ask Reg No
+        batch = context.user_data.get('batch')
+        sem = context.user_data.get('semester')
+        text = (
+            f"{HEADER_TEXT}\n"
+            f"🔄 **Check Another Result**\n"
+            f"Batch: {batch} | Sem: {sem}\n\n"
+            f"🔢 **Enter Registration Number:**"
+        )
+        await query.edit_message_text(text=text, parse_mode='Markdown')
+        return REG_NO
+        
+    elif choice == 'NAV_SEM':
+        # User wants to change Semester (Keep Batch)
+        text = (
+            f"{HEADER_TEXT}\n"
+            f"📂 **Change Semester** (Batch: {context.user_data.get('batch')})\n"
+            f"👇 Select new Semester:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("Sem I", callback_data='I'), InlineKeyboardButton("Sem II", callback_data='II')],
+            [InlineKeyboardButton("Sem III", callback_data='III'), InlineKeyboardButton("Sem IV", callback_data='IV')],
+            [InlineKeyboardButton("Sem V", callback_data='V'), InlineKeyboardButton("Sem VI", callback_data='VI')],
+            [InlineKeyboardButton("Sem VII", callback_data='VII'), InlineKeyboardButton("Sem VIII", callback_data='VIII')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+        return SEMESTER
+        
+    elif choice == 'NAV_HOME':
+        # Go back to start
+        return await start(update, context)
 
-# --- MAIN ---
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚫 **Operation Cancelled.** Type /start to restart.")
+    return ConversationHandler.END
+
+# --- MAIN EXECUTION ---
 if __name__ == '__main__':
-    # 1. Render Keep-Alive Logic
+    # 1. Start Keep-Alive (For Render)
     try:
         from keep_alive import keep_alive
         keep_alive()
@@ -314,25 +385,24 @@ if __name__ == '__main__':
     except ImportError:
         print("⚠️ keep_alive.py not found. Running in Local Mode.")
 
-    # 2. Bot Builder
-    print("🤖 Bot is Starting...")
+    print("🤖 BEU Premium Bot Starting...")
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 3. Handlers
+    # 2. Conversation Handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             BATCH: [CallbackQueryHandler(batch_handler)],
             SEMESTER: [CallbackQueryHandler(semester_handler)],
             REG_NO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_result_handler)],
+            RESULT_MENU: [CallbackQueryHandler(result_menu_handler)]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
     application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(restart, pattern='^restart$'))
     
-    # Admin Handlers
+    # 3. Admin Handlers
     application.add_handler(CommandHandler("set", set_exam_date))
     application.add_handler(CommandHandler("view_config", view_config))
 
