@@ -27,6 +27,7 @@ ADMIN_ID = 6716560182
 BASE_URL = "https://www.beu-bih.ac.in/backend/v1/result/get-result"
 
 # --- DEFAULT EXAM CONFIGURATION (Master List) ---
+# Updated with your specific data
 EXAM_CONFIG = {
     "2025_I": "Jan/2026",
     "2024_II": "Nov/2025",
@@ -53,10 +54,11 @@ logging.basicConfig(
 HEADER_TEXT = "🌐 **Visit: beuhub.site**\n━━━━━━━━━━━━━━━━━━"
 FOOTER_TEXT = "━━━━━━━━━━━━━━━━━━\n🌐 **Powered by beuhub.site**"
 
-# --- HELPER: GENERATE PDF MARKSHEET (PHP DESIGN) ---
+# --- HELPER: GENERATE PDF MARKSHEET (PHP DESIGN FIX) ---
 def generate_pdf_in_memory(data, batch, sem, exam_held):
     """
     Creates a professional Marksheet PDF using HTML and CSS based on the PHP design.
+    Fixed CSS to prevent 'NotImplementedType' error.
     """
     
     # 1. Prepare Data
@@ -141,6 +143,7 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
         history_data += f"<td>{val}</td>"
 
     # 5. HTML Template with CSS (From PHP Design)
+    # FIX: Removed @bottom-center CSS logic and used standard HTML footer div
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -149,12 +152,6 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
             @page {{
                 size: A4;
                 margin: 1cm;
-                @bottom-center {{
-                    content: "Generated via BEU Result Bot | beuhub.site";
-                    font-family: 'Times New Roman', serif;
-                    font-size: 9pt;
-                    color: #777;
-                }}
             }}
             body {{
                 font-family: 'Times New Roman', serif;
@@ -226,6 +223,15 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
                 margin-bottom: 20px;
                 border-bottom: 1px solid #000;
                 padding-bottom: 20px;
+            }}
+            
+            .footer {{
+                text-align: center;
+                margin-top: 30px;
+                font-size: 9pt;
+                color: #777;
+                border-top: 1px solid #ccc;
+                padding-top: 10px;
             }}
         </style>
     </head>
@@ -341,6 +347,11 @@ def generate_pdf_in_memory(data, batch, sem, exam_held):
 
         <div style="margin-top: 10px; font-size: 10pt;">
             <strong>Publish Date:</strong> {publish_date}
+        </div>
+        
+        <!-- Footer (Added manually to avoid CSS errors) -->
+        <div class="footer">
+            Generated via BEU Result Bot | beuhub.site
         </div>
 
     </body>
